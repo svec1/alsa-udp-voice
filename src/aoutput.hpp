@@ -3,19 +3,19 @@
 
 #include <aaudio.hpp>
 #include <cmath>
-#include <vector>
+#include <span>
 
 class output : private audio {
    public:
     output();
 
    public:
-    void play_samples(const std::vector<byte>& bytes);
+    void play_samples(std::span<byte> bytes);
 };
 
 output::output() : audio(SND_PCM_STREAM_PLAYBACK) {}
 
-void output::play_samples(const std::vector<byte>& bytes) {
+void output::play_samples(std::span<byte> bytes) {
     int ret, writed_bytes = 0;
 
     while (writed_bytes < bytes.size()) {
