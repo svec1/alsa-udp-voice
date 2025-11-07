@@ -19,8 +19,8 @@ using byte = char;
 template <typename T, typename... Args>
 void snd_call_(T&& func, std::string_view name_func, Args&&... args) {
     if (int ret = func(args...); ret < 0) {
-        throw std::runtime_error(std::format(
-            "Error({}): {}\n", name_func.data(), snd_strerror(ret)));
+        throw std::runtime_error(
+            std::format("Error({}): {}", name_func, snd_strerror(ret)));
     }
 }
 
@@ -36,7 +36,7 @@ class audio {
                             snd_pcm_hw_params_t* hw_params);
 
    public:
-    static const char* device;
+    static std::string_view device;
     static constexpr unsigned int sample_rate = 44100, channels = 2,
                                   period_size = 256,
                                   buffer_size = period_size * channels * 2;
@@ -67,16 +67,18 @@ audio::audio(snd_pcm_stream_t _mode) : mode(_mode) {
 
         ++counter_astream;
     } catch (std::runtime_error& err) {
-        std::printf("Failed to open the stream(%s:%s)\n%s", device,
-                    !(int)mode ? "PLAYBACK" : "CAPTURE", err.what());
-        exit(1);
+        throw std::runtime_error(
+            std::format("Failed to open the stream({}:{}): {}", device,
+                        !(int)mode ? "PLAYBACK" : "CAPTURE", err.what()));
     }
 }
 audio::~audio() {
     snd_pcm_close(pcm_handle);
     if (!counter_astream--) snd_pcm_hw_params_free(hw_params);
 }
-void audio::open_pcm() { snd_call(snd_pcm_open, &pcm_handle, device, mode, 0); }
+void audio::open_pcm() {
+    snd_call(snd_pcm_open, &pcm_handle, device.data(), mode, 0);
+}
 void audio::init_params(snd_pcm_t* pcm_handle, snd_pcm_hw_params_t* hw_params) {
     static snd_pcm_uframes_t pcm_period_size = 940;
 
@@ -91,7 +93,7 @@ void audio::init_params(snd_pcm_t* pcm_handle, snd_pcm_hw_params_t* hw_params) {
              &pcm_period_size, nullptr);
 }
 
-const char* audio::device = "";
+std::string_view audio::device = "";
 snd_pcm_hw_params_t* audio::hw_params = nullptr;
 unsigned int audio::counter_astream = 0;
 

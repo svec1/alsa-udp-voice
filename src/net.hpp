@@ -4,10 +4,10 @@
 #include <array>
 #include <boost/asio.hpp>
 
-using namespace boost::asio;
+using namespace boost;
 
 template <unsigned int _buffer_size = 4096>
-struct package_native_t {
+struct packet_native_t {
     using buffer_el_t = char;
     template <unsigned int size_buffer>
     using buffer_t = std::array<buffer_el_t, size_buffer>;
@@ -16,7 +16,7 @@ struct package_native_t {
     static constexpr unsigned int buffer_size = _buffer_size;
 
    public:
-    package_native_t() = default;
+    packet_native_t() = default;
 
     virtual buffer_t<buffer_size> to_bytes() const {
         buffer_t<buffer_size> arr;
@@ -34,66 +34,85 @@ struct package_native_t {
     buffer_t<buffer_size> buffer;
 };
 
-class socket;
+class nstream;
 
-template <typename T>
-class package : public std::enable_if_t<
-                    std::is_base_of_v<package_native_t<T::buffer_size>, T>, T> {
-    friend class socket;
+template <typename T, typename F, F _prepare, F _was_accepted>
+class packet : public std::enable_if_t<
+                   std::is_base_of_v<packet_native_t<T::buffer_size>, T> &&
+                       std::is_invocable_v<F, decltype(std::declval<T&>())>,
+                   T> {
+    friend class nstream;
 
    public:
-    using callback_func_t = std::function<void(T& package)>;
-    using package_t = T;
+    using packet_t = T;
+    using cfunction_t = F;
 
    public:
     static constexpr unsigned int size = sizeof(T) - 8;
 
    public:
-    package() = default;
-    package(T&& pckg) : T(pckg) {}
+    packet() = default;
+    packet(T&& pckg) : T(pckg) {}
 
-    package(callback_func_t _c) : c(_c), expect(true) {}
-
-   private:
-    void operator()() {
-        if (c) c(*dynamic_cast<T*>(this));
-    }
-
-   private:
-    callback_func_t c;
-    const bool expect = false;
+   public:
+    static void prepare(packet_t& pckt) { _prepare(pckt); }
+    static void was_accepted(packet_t& pckt) { _was_accepted(pckt); }
 };
 
-class socket final {
+template <typename T>
+struct applied_native_protocol {
+    static constexpr void prepare(T& pckt) {}
+    static constexpr void was_accepted(T& pckt) {}
+
+    using cfunction_t = decltype(prepare);
+};
+
+class nstream final {
    public:
-    socket(io_context& io, ip::address_v4 addr, ip::port_type port)
+    nstream(asio::io_context& io, asio::ip::address_v4 addr,
+            asio::ip::port_type port)
         : sock(io), p(addr, port) {
-        sock.open(p.protocol());
+        sock.open(p.protocol(), ec);
+        sock.set_option(asio::socket_base::broadcast(true));
+        if (ec.value())
+            throw std::runtime_error(
+                std::format("Failed to open udp socket({}).", ec.message()));
     }
 
    public:
-    template <typename T>
-    void send_to(package<T>&& pckg) {
-        sock.send_to(boost::asio::buffer(pckg.to_bytes()), p);
+    template <typename T, typename aprotocol = applied_native_protocol<T>>
+    std::enable_if_t<std::is_same_v<
+        T, packet<typename T::packet_t, typename aprotocol::cfunction_t,
+                  aprotocol::prepare, aprotocol::was_accepted>>>
+    send_to(T&& pckt) {
+        T::prepare(pckt);
+        sock.send_to(boost::asio::buffer(pckt.to_bytes()), p, 0, ec);
+        if (ec.value())
+            throw std::runtime_error(
+                std::format("Failed to send packet({}).", ec.message()));
     }
 
-    template <typename T>
-    void receive_last(package<T>& pckg) {
-        if (!pckg.expect)
-            throw std::runtime_error("The packet is being transmitted.");
-
+    template <typename T, typename aprotocol = applied_native_protocol<T>>
+    std::enable_if_t<std::is_same_v<
+        T, packet<typename T::packet_t, typename aprotocol::cfunction_t,
+                  aprotocol::prepare, aprotocol::was_accepted>>>
+    receive_last(T& pckt) {
         unsigned int len = sock.receive_from(
-            boost::asio::buffer(pckg.get_buffer(), package<T>::size), p);
-
-        if (len != package<T>::size)
+            boost::asio::buffer(pckt.get_buffer(), T::size), p, 0, ec);
+        if (ec.value())
+            throw std::runtime_error(
+                std::format("Failed to process packet({}).", ec.message()));
+        else if (len != T::size)
             throw std::runtime_error("Undefined package.");
 
-        pckg();
+        T::was_accepted(pckt);
     }
 
    private:
-    ip::udp::socket sock;
-    ip::udp::endpoint p;
+    asio::ip::udp::socket sock;
+    asio::ip::udp::endpoint p;
+
+    boost::system::error_code ec;
 };
 
 #endif

@@ -1,22 +1,20 @@
-#include <ainput.hpp>
-#include <aoutput.hpp>
-#include <net.hpp>
-#include <string_view>
-#include <thread>
+#include <alsa_udp_voice_service.hpp>
+
+using namespace boost;
 
 struct vcu_config {
-    std::string_view device, host;
-    boost::asio::ip::port_type port;
+    std::string_view device;
+
+    asio::ip::address_v4 host;
+    asio::ip::port_type port;
 };
 
-static vcu_config parse_options(int argc, char* argv[]) {
-    vcu_config cfg;
-
+static void parse_options(vcu_config& cfg, int argc, char* argv[]) {
     static constexpr auto throw_usage = [](std::string_view arg,
                                            int expected_argument = 0) {
         std::string throw_string;
 
-        if (expected_argument)
+        if (expected_argument == 1)
             throw_string = std::format("Option requires an argument: {}", arg);
         else if (expected_argument == -1)
             throw_string = std::format("Invalid argument: {}", arg);
@@ -25,7 +23,7 @@ static vcu_config parse_options(int argc, char* argv[]) {
 
         throw std::runtime_error(std::format(
             "{}\n"
-            "Usage: alsa_tcp_voice [-D sound device] [-h IP host] [-p port]",
+            "Usage: alsa_tcp_voice [-D sound device] [-h IP Host] [-p port]",
             throw_string));
     };
 
@@ -33,12 +31,12 @@ static vcu_config parse_options(int argc, char* argv[]) {
         if (std::strlen(argv[i]) > 2)
             return argv[i] + 2;
         else {
-            if (argc < i + 1)
+            if (argc <= i + 1)
                 throw_usage(argv[i], 1);
             else if (argv[i + 1][0] == '-')
                 throw_usage(argv[i + 1], -1);
 
-            return argv[i++];
+            return argv[++i];
         }
     };
 
@@ -48,91 +46,43 @@ static vcu_config parse_options(int argc, char* argv[]) {
         std::string_view option = argv[i];
         std::string_view current_value = get_argument(argc, argv, i);
 
-        switch (option[1]) {
-            case 'D': {
-                cfg.device = current_value;
-                break;
-            }
-            case 'h': {
-                cfg.host = current_value;
-                break;
-            }
-            case 'p': {
-                try {
-                    cfg.port = std::stoi(current_value.data());
-                } catch (...) {
-                    throw_usage(current_value, -1);
+        try {
+            switch (option[1]) {
+                case 'D': {
+                    cfg.device = current_value;
+                    break;
                 }
-                break;
+                case 'h': {
+                    cfg.host = asio::ip::make_address_v4(current_value);
+                    break;
+                }
+                case 'p': {
+                    cfg.port = std::stoi(current_value.data());
+                    break;
+                }
+                default:
+                    throw_usage(std::string("-") + option[1]);
             }
-            default:
-                throw_usage(std::string("-") + option[1]);
+        } catch (system::system_error&) {
+            throw_usage(current_value, -1);
         }
     }
-
-    return cfg;
 }
-
-template <typename T = package_native_t<>>
-class voice_service_udp_user {
-    using package_t = package<T>;
-
-   public:
-    voice_service_udp_user(vcu_config& _cfg)
-        : cfg(_cfg),
-          io_net(io, boost::asio::ip::make_address_v4(cfg.host), cfg.port) {
-        run();
-    }
-
-   private:
-    void run() {
-        std::thread sender(this->send_samples, std::ref(io_net), std::ref(in));
-        std::thread receiver(this->receive_samples, std::ref(io_net),
-                             std::ref(out));
-
-        sender.join();
-        receiver.join();
-    }
-
-   private:
-    static void send_samples(class socket& io_net, input& in) {
-        static package_t pckg;
-        while (true) {
-            for (unsigned int i = 0; i < sizeof pckg / audio::buffer_size; ++i)
-                std::memcpy(pckg.buffer.data() + i * audio::buffer_size,
-                            in.get_samples().data(), audio::buffer_size);
-
-            io_net.send_to(std::move(pckg));
-        }
-    }
-    static void receive_samples(class socket& io_net, output& out) {
-        static package_t pckg(
-            [](T&) { std::printf("New T package accepted.\n"); });
-        while (true) {
-            io_net.receive_last(pckg);
-            out.play_samples({pckg.get_buffer(), package_t::size});
-        }
-    }
-
-   public:
-    vcu_config cfg;
-
-   public:
-    input in;
-    output out;
-
-    boost::asio::io_context io;
-    class socket io_net;
-};
 
 int main(int argc, char* argv[]) {
     try {
-        vcu_config cfg = parse_options(argc, argv);
-        audio::device = cfg.device.data();
+        vcu_config cfg = {.device = "plughw:0",
+                          .host = asio::ip::address_v4::broadcast(),
+                          .port = 8888};
+        parse_options(cfg, argc, argv);
 
-        voice_service_udp_user vsc(cfg);
-    } catch (std::exception& excp) {
-        std::printf("%s\n", excp.what());
+        std::println("ID Sound device: {}", cfg.device);
+        std::println("IP Host: {}, port: {}", cfg.host.to_string(), cfg.port);
+
+        audio::device = cfg.device;
+        alsa_udp_voice_service<> vsc(cfg.host, cfg.port);
+    } catch (std::runtime_error& excp) {
+        std::println("{}", excp.what());
         return 1;
     }
 
