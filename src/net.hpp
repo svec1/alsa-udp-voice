@@ -66,13 +66,15 @@ class package : public std::enable_if_t<
 
 class socket final {
    public:
-    socket(io_context& io) : sock(io) { sock.open(ip::udp::v4()); }
+    socket(io_context& io, ip::address_v4 addr, ip::port_type port)
+        : sock(io), p(addr, port) {
+        sock.open(p.protocol());
+    }
 
    public:
     template <typename T>
-    void send_to(package<T>&& pckg, ip::address addr, ip::port_type port) {
-        sock.send_to(boost::asio::buffer(pckg.to_bytes()),
-                     ip::udp::endpoint{addr, port});
+    void send_to(package<T>&& pckg) {
+        sock.send_to(boost::asio::buffer(pckg.to_bytes()), p);
     }
 
     template <typename T>
@@ -80,8 +82,8 @@ class socket final {
         if (!pckg.expect)
             throw std::runtime_error("The packet is being transmitted.");
 
-        unsigned int len = sock.receive(
-            boost::asio::buffer(pckg.get_buffer(), package<T>::size));
+        unsigned int len = sock.receive_from(
+            boost::asio::buffer(pckg.get_buffer(), package<T>::size), p);
 
         if (len != package<T>::size)
             throw std::runtime_error("Undefined package.");
@@ -91,6 +93,7 @@ class socket final {
 
    private:
     ip::udp::socket sock;
+    ip::udp::endpoint p;
 };
 
 #endif
