@@ -1,5 +1,7 @@
 #ifndef NET_HPP
-#define NET_HPP
+#define NET_HP
+
+#include <unistd.h>
 
 #include <array>
 #include <boost/asio.hpp>
@@ -71,9 +73,13 @@ class nstream final {
    public:
     nstream(asio::io_context& io, asio::ip::address_v4 addr,
             asio::ip::port_type port)
-        : sock(io), p(addr, port) {
+        : sock(io), p(addr, port), i_address(get_default_interface_address()) {
         sock.open(p.protocol(), ec);
+        sock.bind(p);
+
         sock.set_option(asio::socket_base::broadcast(true));
+        sock.set_option(asio::socket_base::reuse_address(true));
+
         if (ec.value())
             throw std::runtime_error(
                 std::format("Failed to open udp socket({}).", ec.message()));
@@ -97,20 +103,44 @@ class nstream final {
         T, packet<typename T::packet_t, typename aprotocol::cfunction_t,
                   aprotocol::prepare, aprotocol::was_accepted>>>
     receive_last(T& pckt) {
-        unsigned int len = sock.receive_from(
-            boost::asio::buffer(pckt.get_buffer(), T::size), p, 0, ec);
-        if (ec.value())
-            throw std::runtime_error(
-                std::format("Failed to process packet({}).", ec.message()));
-        else if (len != T::size)
-            throw std::runtime_error("Undefined package.");
+        typename T::template buffer_t<T::size> buffer_tmp;
+        asio::ip::udp::endpoint p_sender;
+        do {
+            p_sender = {};
+            unsigned int len = sock.receive_from(
+                boost::asio::buffer(buffer_tmp), p_sender, 0, ec);
+            if (ec.value())
+                throw std::runtime_error(
+                    std::format("Failed to process packet({}).", ec.message()));
+            else if (len != T::size)
+                throw std::runtime_error("Undefined package.");
+        } while (p_sender.address() == i_address);
 
+        std::printf("%s\n", p_sender.address().to_string().data());
+
+        std::copy(buffer_tmp.begin(), buffer_tmp.end(), pckt.get_buffer());
         T::was_accepted(pckt);
+    }
+
+   private:
+    static asio::ip::address_v4 get_default_interface_address() {
+        FILE* pipe_ip_default =
+            popen("ip route show default | awk '/default/ {print $9}'", "r");
+
+        std::string ip_str("", 16);
+        fread(ip_str.data(), 1, ip_str.size(), pipe_ip_default);
+        pclose(pipe_ip_default);
+
+        if (auto it = ip_str.find_last_of("\n"); it != ip_str.npos)
+            ip_str.erase(it, ip_str.size() - 1);
+
+        return asio::ip::make_address_v4(ip_str);
     }
 
    private:
     asio::ip::udp::socket sock;
     asio::ip::udp::endpoint p;
+    asio::ip::address_v4 i_address;
 
     boost::system::error_code ec;
 };

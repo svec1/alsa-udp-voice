@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
 
-set(ATV alsa_tcp_voice)
+set(AUV alsa_udp_voice)
 
 project(ALSA_TCP_VOICE)
 set(CMAKE_CXX_STANDARD 23)
 file(GLOB_RECURSE SRC_FILES src/*.cpp)
-add_executable(${ATV} ${SRC_FILES})
+add_executable(${AUV} ${SRC_FILES})
 
-target_link_libraries(${ATV} PRIVATE asound)
-target_include_directories(${ATV} PRIVATE src/)
+target_link_libraries(${AUV} PRIVATE asound)
+target_include_directories(${AUV} PRIVATE src/)
