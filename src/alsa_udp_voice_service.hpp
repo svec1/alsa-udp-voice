@@ -6,41 +6,45 @@
 #include <net.hpp>
 #include <print>
 #include <thread>
+#include <vector>
 
 using namespace boost;
 
-template <
-    typename T = packet_native_t<>,
-    typename _aprotocol = applied_native_protocol<T>,
-    typename = std::void_t<
-        typename _aprotocol::cfunction_t,
-        std::enable_if_t<std::is_invocable_v<decltype(_aprotocol::prepare),
-                                             decltype(std::declval<T&>())> &&
-                         std::is_invocable_v<decltype(_aprotocol::was_accepted),
-                                             decltype(std::declval<T&>())>>>>
+template <typename T = packet_native_t<>,
+          typename aprotocol = applied_native_protocol<T>>
 class alsa_udp_voice_service {
-    using aprotocol = _aprotocol;
-    using package_t = packet<T, typename aprotocol::cfunction_t,
-                             aprotocol::prepare, aprotocol::was_accepted>;
+   public:
+    static constexpr ipv v = ipv::v4;
+
+    using nstream_t = nstream<v>;
+    using package_t = packet<T, aprotocol>;
 
    public:
-    alsa_udp_voice_service(asio::ip::address_v4 host, asio::ip::port_type port)
-        : net(io, host, port) {
-        run();
+    alsa_udp_voice_service(const std::vector<nstream_t::ipv_t>& addrs,
+                           asio::ip::port_type port)
+        : net(io, port) {
+        run(addrs);
     }
 
    private:
-    void run() {
-        std::thread sender(this->send_samples, std::ref(net), std::ref(in));
-        std::thread receiver(this->receive_samples, std::ref(net),
-                             std::ref(out));
+    void run(const std::vector<nstream_t::ipv_t>& addrs) {
+        std::vector<std::thread> ts_receivers;
+        std::for_each(
+            addrs.begin(), addrs.end(), [&](const nstream_t::ipv_t& addr) {
+                ts_receivers.emplace_back(this->receive_samples, std::ref(net),
+                                          std::ref(out), std::cref(addr));
+            });
+        std::thread sender(this->send_samples, std::ref(net), std::ref(in),
+                           std::cref(addrs));
 
         sender.join();
-        receiver.join();
+        std::for_each(ts_receivers.begin(), ts_receivers.end(),
+                      [&](auto& t_receiver) { t_receiver.detach(); });
     }
 
    private:
-    static void send_samples(nstream& net, input& in) {
+    static void send_samples(nstream_t& net, input& in,
+                             const std::vector<nstream_t::ipv_t>& addrs) {
         try {
             static package_t pckg;
             while (true) {
@@ -50,18 +54,21 @@ class alsa_udp_voice_service {
                     std::copy(arr.begin(), arr.end(),
                               pckg.buffer.begin() + i * audio::buffer_size);
                 }
-                net.send_to<package_t, aprotocol>(std::move(pckg));
+                std::for_each(addrs.begin(), addrs.end(), [&](auto& addr) {
+                    net.send_to(std::move(pckg), addr);
+                });
             }
         } catch (std::runtime_error& excp) {
             std::println("{}", excp.what());
             exit(1);
         }
     }
-    static void receive_samples(nstream& net, output& out) {
+    static void receive_samples(nstream_t& net, output& out,
+                                const nstream_t::ipv_t& addr) {
         try {
             static package_t pckg;
             while (true) {
-                net.receive_last<package_t, aprotocol>(pckg);
+                net.receive_last(pckg, addr);
                 out.play_samples(
                     std::span<typename package_t::buffer_el_t,
                               package_t::buffer_size>{pckg.buffer});
@@ -77,7 +84,7 @@ class alsa_udp_voice_service {
     output out;
 
     asio::io_context io;
-    nstream net;
+    nstream_t net;
 };
 
 #endif

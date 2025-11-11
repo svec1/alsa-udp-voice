@@ -1,12 +1,27 @@
+#include <unistd.h>
+
 #include <alsa_udp_voice_service.hpp>
 
 using namespace boost;
 
+static asio::ip::address get_default_interface_address() {
+    FILE* pipe_ip_default =
+        popen("ip route show default | awk '/default/ {print $9}'", "r");
+
+    std::string ip_str("", 16);
+    fread(ip_str.data(), 1, ip_str.size(), pipe_ip_default);
+    pclose(pipe_ip_default);
+
+    if (auto it = ip_str.find_last_of("\n"); it != ip_str.npos)
+        ip_str.erase(it, ip_str.size() - 1);
+
+    return asio::ip::make_address(ip_str);
+}
+
 struct vcu_config {
     std::string_view device;
-
-    asio::ip::address_v4 host;
     asio::ip::port_type port;
+    std::vector<alsa_udp_voice_service<>::nstream_t::ipv_t> addrs;
 };
 
 static void parse_options(vcu_config& cfg, int argc, char* argv[]) {
@@ -53,7 +68,8 @@ static void parse_options(vcu_config& cfg, int argc, char* argv[]) {
                     break;
                 }
                 case 'h': {
-                    cfg.host = asio::ip::make_address_v4(current_value);
+                    cfg.addrs.push_back(
+                        asio::ip::make_address_v4(current_value));
                     break;
                 }
                 case 'p': {
@@ -67,20 +83,29 @@ static void parse_options(vcu_config& cfg, int argc, char* argv[]) {
             throw_usage(current_value, -1);
         }
     }
+
+    if (!cfg.addrs.size())
+        cfg.addrs.push_back(asio::ip::address_v4::broadcast());
+}
+
+void print_cfg(const vcu_config& cfg) {
+    std::println("ID Sound device: {}", cfg.device);
+    std::println("Listening port: {}", cfg.port);
+    std::println("Possible contact addresses:");
+    std::for_each(cfg.addrs.begin(), cfg.addrs.end(),
+                  [](auto& addr) { std::println("{}", addr.to_string()); });
 }
 
 int main(int argc, char* argv[]) {
     try {
-        vcu_config cfg = {.device = "plughw:0",
-                          .host = asio::ip::address_v4::broadcast(),
-                          .port = 8888};
+        vcu_config cfg = {.device = "plughw:0", .port = 8888};
         parse_options(cfg, argc, argv);
+        print_cfg(cfg);
 
-        std::println("ID Sound device: {}", cfg.device);
-        std::println("IP Host: {}, port: {}", cfg.host.to_string(), cfg.port);
+        audio::device_capture = cfg.device;
+        audio::device_playback = cfg.device;
 
-        audio::device = cfg.device;
-        alsa_udp_voice_service<> vsc(cfg.host, cfg.port);
+        alsa_udp_voice_service<> vsc(cfg.addrs, cfg.port);
     } catch (std::runtime_error& excp) {
         std::println("{}", excp.what());
         return 1;

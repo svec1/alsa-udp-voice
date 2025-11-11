@@ -36,7 +36,7 @@ class audio {
                             snd_pcm_hw_params_t* hw_params);
 
    public:
-    static std::string_view device;
+    static std::string_view device_capture, device_playback;
     static constexpr unsigned int sample_rate = 44100, channels = 2,
                                   period_size = 256,
                                   buffer_size = period_size * channels * 2;
@@ -71,7 +71,8 @@ audio::audio(snd_pcm_stream_t _mode) : mode(_mode) {
         ++counter_astream;
     } catch (std::runtime_error& err) {
         throw std::runtime_error(
-            std::format("Failed to open the stream({}:{}): {}", device,
+            std::format("Failed to open the stream({}:{}): {}",
+                        (!(int)mode ? device_playback : device_capture).data(),
                         !(int)mode ? "PLAYBACK" : "CAPTURE", err.what()));
     }
 }
@@ -80,7 +81,8 @@ audio::~audio() {
     if (!counter_astream--) snd_pcm_hw_params_free(hw_params);
 }
 void audio::open_pcm() {
-    snd_call(snd_pcm_open, &pcm_handle, device.data(), mode, 0);
+    snd_call(snd_pcm_open, &pcm_handle,
+             (!(int)mode ? device_playback : device_capture).data(), mode, 0);
 }
 void audio::init_params(snd_pcm_t* pcm_handle, snd_pcm_hw_params_t* hw_params) {
     static snd_pcm_uframes_t pcm_period_size = 940;
@@ -96,7 +98,7 @@ void audio::init_params(snd_pcm_t* pcm_handle, snd_pcm_hw_params_t* hw_params) {
              &pcm_period_size, nullptr);
 }
 
-std::string_view audio::device = "";
+std::string_view audio::device_capture = "", audio::device_playback = "";
 snd_pcm_hw_params_t* audio::hw_params = nullptr;
 unsigned int audio::counter_astream = 0;
 
